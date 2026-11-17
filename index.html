@@ -8,14 +8,19 @@ canvas{max-width:100%;border-radius:12px;background:#000}
 button,label.b{background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}
 button.on{background:#5b8cff;border-color:#5b8cff}
 video{display:none}
+body.clean{padding:0;gap:0;background:#000}
+body.clean .row,body.clean h3{display:none}
+body.clean canvas{max-height:100vh;border-radius:0}
 </style></head><body>
 <h3 id="st">Loading models…</h3>
 <video id="v" playsinline muted></video>
-<canvas id="c" width="960" height="720"></canvas>
+<canvas id="c" width="1280" height="720"></canvas>
 <div class="row">
   <label class="b">📁 Upload face<input id="f" type="file" accept="image/*" hidden></label>
   <button data-m="swap">Face swap</button>
   <button data-m="off">Off</button>
+  <button id="mir" class="on">Mirror</button>
+  <button id="cl">Clean view (H)</button>
   <button id="snap">📸 Save</button>
 </div>
 <div class="row" id="em"></div>
@@ -25,12 +30,13 @@ import {FaceLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@medi
 import Delaunator from "https://cdn.jsdelivr.net/npm/delaunator@5.0.1/+esm";
 
 const $=id=>document.getElementById(id);
-const v=$('v'),c=$('c'),x=c.getContext('2d');
+const v=$('v'),c=$('c'),x=c.getContext('2d',{willReadFrequently:true});
 const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
-let mode='swap',emoji=null,src=null,tris=null,res=null,last=-1;
+const OVAL=[10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+const SAMPLE=[50,280,151,205,425];
+let mode='swap',emoji=null,src=null,tris=null,res=null,last=-1,mir=true,sm=null;
 
-// UI
-const EMOJIS=['🤡','👽','🐶','🐱','🤖','💀','👹','🦊','🐸','🎃','😎','🦄'];
+const EMOJIS=['😀','😎','🥳','🤩','😺','🐶','🐱','🐼','🦊','🦁','🐰','🐨','🐵','🦄','🐸'];
 EMOJIS.forEach(e=>{const b=document.createElement('button');b.textContent=e;b.onclick=()=>{mode='emoji';emoji=e;ui()};$('em').append(b)});
 document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{mode=b.dataset.m;ui()});
 function ui(){
@@ -38,6 +44,10 @@ function ui(){
   document.querySelectorAll('#em button').forEach(b=>b.classList.toggle('on',mode==='emoji'&&b.textContent===emoji));
   $('st').textContent=mode==='swap'&&!src?'Upload a face photo (front-facing works best)':'Ready';
 }
+$('mir').onclick=e=>{mir=!mir;e.target.classList.toggle('on',mir)};
+const clean=()=>document.body.classList.toggle('clean');
+$('cl').onclick=clean;
+addEventListener('keydown',e=>{if(e.key.toLowerCase()==='h')clean()});
 $('snap').onclick=()=>c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='face.png';a.click()});
 
 try{
@@ -49,25 +59,35 @@ try{
   };
   const [lmV,lmI]=await Promise.all([mk("VIDEO"),mk("IMAGE")]);
 
-  v.srcObject=await navigator.mediaDevices.getUserMedia({video:{width:960,height:720,facingMode:'user'},audio:false});
+  v.srcObject=await navigator.mediaDevices.getUserMedia({video:{width:1280,height:720,facingMode:'user'},audio:false});
   await v.play();
   c.width=v.videoWidth;c.height=v.videoHeight;
+  const mkc=()=>{const k=document.createElement('canvas');k.width=c.width;k.height=c.height;return k};
+  const o=mkc(),ox=o.getContext('2d',{willReadFrequently:true});
+  const m=mkc(),mx=m.getContext('2d');
   ui();
 
-  // Upload source face
+  const avgAt=(g,p)=>{let r=0,gg=0,b=0,n=0;
+    for(const i of SAMPLE){const px=Math.round(p[i][0]),py=Math.round(p[i][1]);
+      const d=g.getImageData(Math.max(0,px-5),Math.max(0,py-5),10,10).data;
+      for(let k=0;k<d.length;k+=4){r+=d[k];gg+=d[k+1];b+=d[k+2];n++}}
+    return[r/n,gg/n,b/n]};
+
   $('f').onchange=async e=>{
     const file=e.target.files[0];if(!file)return;
     const img=new Image();img.src=URL.createObjectURL(file);await img.decode();
     const r=lmI.detect(img);
     if(!r.faceLandmarks.length){alert('No face found in that image. Try a clearer, front-facing photo.');return}
-    const p=r.faceLandmarks[0].map(q=>[q.x*img.naturalWidth,q.y*img.naturalHeight]);
-    tris=Delaunator.from(p).triangles;src={img,p};mode='swap';ui();
+    const p=r.faceLandmarks[0].slice(0,468).map(q=>[q.x*img.naturalWidth,q.y*img.naturalHeight]);
+    const k=document.createElement('canvas');k.width=img.naturalWidth;k.height=img.naturalHeight;
+    const kx=k.getContext('2d');kx.drawImage(img,0,0);
+    tris=Delaunator.from(p).triangles;src={img,p,col:avgAt(kx,p)};mode='swap';ui();
   };
 
-  function tri(img,s,d){
+  function tri(g,img,s,d){
     const [s0,s1,s2]=s,[d0,d1,d2]=d;
     const cx=(d0[0]+d1[0]+d2[0])/3,cy=(d0[1]+d1[1]+d2[1])/3;
-    const ex=q=>{const dx=q[0]-cx,dy=q[1]-cy,l=Math.hypot(dx,dy)||1;return[q[0]+dx/l*.7,q[1]+dy/l*.7]};
+    const ex=q=>{const dx=q[0]-cx,dy=q[1]-cy,l=Math.hypot(dx,dy)||1;return[q[0]+dx/l*.8,q[1]+dy/l*.8]};
     const [e0,e1,e2]=d.map(ex);
     const det=(s1[0]-s0[0])*(s2[1]-s0[1])-(s2[0]-s0[0])*(s1[1]-s0[1]);
     if(Math.abs(det)<1e-6)return;
@@ -76,13 +96,35 @@ try{
     const b=((d1[1]-d0[1])*(s2[1]-s0[1])-(d2[1]-d0[1])*(s1[1]-s0[1]))/det;
     const dd=((d2[1]-d0[1])*(s1[0]-s0[0])-(d1[1]-d0[1])*(s2[0]-s0[0]))/det;
     const e=d0[0]-a*s0[0]-cc*s0[1],f=d0[1]-b*s0[0]-dd*s0[1];
-    x.save();x.beginPath();x.moveTo(e0[0],e0[1]);x.lineTo(e1[0],e1[1]);x.lineTo(e2[0],e2[1]);x.closePath();x.clip();
-    x.transform(a,b,cc,dd,e,f);x.drawImage(img,0,0);x.restore();
+    g.save();g.beginPath();g.moveTo(e0[0],e0[1]);g.lineTo(e1[0],e1[1]);g.lineTo(e2[0],e2[1]);g.closePath();g.clip();
+    g.transform(a,b,cc,dd,e,f);g.drawImage(img,0,0);g.restore();
   }
+
   function swap(P){
+    const live=avgAt(x,P);            // skin tone from live frame (before drawing)
+    ox.clearRect(0,0,o.width,o.height);
     const t=tris,s=src.p;
-    for(let i=0;i<t.length;i+=3){const a=t[i],b=t[i+1],d=t[i+2];tri(src.img,[s[a],s[b],s[d]],[P[a],P[b],P[d]])}
+    for(let i=0;i<t.length;i+=3){const a=t[i],b=t[i+1],d=t[i+2];tri(ox,src.img,[s[a],s[b],s[d]],[P[a],P[b],P[d]])}
+    // bounding box of face
+    const xs=OVAL.map(i=>P[i][0]),ys=OVAL.map(i=>P[i][1]);
+    const x0=Math.max(0,Math.floor(Math.min(...xs))-6),y0=Math.max(0,Math.floor(Math.min(...ys))-6);
+    const x1=Math.min(c.width,Math.ceil(Math.max(...xs))+6),y1=Math.min(c.height,Math.ceil(Math.max(...ys))+6);
+    const w=x1-x0,h=y1-y0;if(w<20||h<20)return;
+    // color match: scale source skin tone to live skin tone
+    const gain=[0,1,2].map(k=>Math.min(1.8,Math.max(.5,live[k]/Math.max(1,src.col[k]))));
+    const id=ox.getImageData(x0,y0,w,h),dt=id.data;
+    for(let i=0;i<dt.length;i+=4){dt[i]*=gain[0];dt[i+1]*=gain[1];dt[i+2]*=gain[2]}
+    ox.putImageData(id,x0,y0);
+    // feathered face-oval mask (slightly shrunk so hair/edges stay yours)
+    const mc=[0,1].map(k=>OVAL.reduce((a,i)=>a+P[i][k],0)/OVAL.length);
+    mx.clearRect(0,0,m.width,m.height);
+    mx.filter='blur(6px)';mx.fillStyle='#fff';mx.beginPath();
+    OVAL.forEach((i,n)=>{const px=mc[0]+(P[i][0]-mc[0])*.95,py=mc[1]+(P[i][1]-mc[1])*.95;n?mx.lineTo(px,py):mx.moveTo(px,py)});
+    mx.closePath();mx.fill();mx.filter='none';
+    ox.globalCompositeOperation='destination-in';ox.drawImage(m,0,0);ox.globalCompositeOperation='source-over';
+    x.drawImage(o,0,0);
   }
+
   function drawEmoji(P){
     let l=P[234],r=P[454];if(r[0]<l[0])[l,r]=[r,l];
     const cx=(P[10][0]+P[152][0])/2,cy=(P[10][1]+P[152][1])/2;
@@ -92,17 +134,20 @@ try{
   }
 
   (function loop(){
-    x.save();x.scale(-1,1);x.drawImage(v,-c.width,0,c.width,c.height);x.restore();
+    x.save();if(mir){x.scale(-1,1);x.drawImage(v,-c.width,0,c.width,c.height)}else x.drawImage(v,0,0,c.width,c.height);x.restore();
     if(v.currentTime!==last){last=v.currentTime;res=lmV.detectForVideo(v,performance.now())}
     const L=res&&res.faceLandmarks&&res.faceLandmarks[0];
     if(L&&mode!=='off'){
-      const P=L.map(q=>[(1-q.x)*c.width,q.y*c.height]);
-      if(mode==='swap'&&src)swap(P);else if(mode==='emoji'&&emoji)drawEmoji(P);
-    }
+      const raw=L.map(q=>[(mir?1-q.x:q.x)*c.width,q.y*c.height]);
+      // smooth jitter
+      if(!sm||sm.length!==raw.length)sm=raw;
+      else sm=raw.map((p,i)=>[sm[i][0]+(p[0]-sm[i][0])*.6,sm[i][1]+(p[1]-sm[i][1])*.6]);
+      if(mode==='swap'&&src)swap(sm);else if(mode==='emoji'&&emoji)drawEmoji(sm);
+    }else sm=null;
     requestAnimationFrame(loop);
   })();
 }catch(err){
-  $('st').textContent='Error: '+err.message+' (open via http://localhost, allow camera, check internet)';
+  $('st').textContent='Error: '+err.message+' (open via https, allow camera, check internet)';
 }
 </script>
 </body></html>
